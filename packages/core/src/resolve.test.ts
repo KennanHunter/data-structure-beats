@@ -129,4 +129,92 @@ describe("resolve", () => {
       ),
     ).toThrow(/unknown pose/);
   });
+
+  describe("derived elements", () => {
+    it("recomputes a derived element from its deps after overrides apply", () => {
+      // pointer spans from a.right_edge to b.left_edge.
+      const scene = {
+        elements: new Map([
+          ["a", { id: "a", kind: "node" }],
+          ["b", { id: "b", kind: "node" }],
+          [
+            "p",
+            {
+              id: "p",
+              kind: "pointer",
+              derived: {
+                deps: ["a", "b"],
+                compute: (
+                  own: Box,
+                  deps: Box[],
+                ): Partial<Box> => ({
+                  x: deps[0].x + deps[0].w,
+                  y: own.y,
+                  w: deps[1].x - (deps[0].x + deps[0].w),
+                  h: own.h,
+                }),
+              },
+            },
+          ],
+        ]),
+      };
+      const pbase = makePose({
+        a: box(0, 0, 10, 10),
+        b: box(30, 0, 10, 10),
+        p: { x: 0, y: 4, w: 0, h: 2, opacity: 1 },
+      });
+      const out = resolve(
+        pbase,
+        { base: pbase, prev: pbase },
+        [{ id: "b", offset: { dx: 20, dy: 0 } }],
+        hierarchyFromScene(scene),
+        scene,
+      );
+      // b moved from x=30 → 50; derived pointer tracks it.
+      expect(out.boxes.get("p")!.x).toBe(10);
+      expect(out.boxes.get("p")!.w).toBe(40);
+    });
+
+    it("throws on dep cycle", () => {
+      const scene = {
+        elements: new Map([
+          [
+            "a",
+            {
+              id: "a",
+              kind: "x",
+              derived: {
+                deps: ["b"],
+                compute: () => ({}),
+              },
+            },
+          ],
+          [
+            "b",
+            {
+              id: "b",
+              kind: "x",
+              derived: {
+                deps: ["a"],
+                compute: () => ({}),
+              },
+            },
+          ],
+        ]),
+      };
+      const pbase = makePose({
+        a: box(0, 0),
+        b: box(0, 0),
+      });
+      expect(() =>
+        resolve(
+          pbase,
+          { base: pbase, prev: pbase },
+          [],
+          hierarchyFromScene(scene),
+          scene,
+        ),
+      ).toThrow(/derived cycle/);
+    });
+  });
 });

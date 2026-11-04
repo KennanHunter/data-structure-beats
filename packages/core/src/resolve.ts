@@ -1,4 +1,4 @@
-import type { Box, ID, Override, Pose, Refs, Scene } from "./types";
+import type { Box, Derived, ID, Override, Pose, Refs, Scene } from "./types";
 
 export type Hierarchy = {
   children: Map<ID, ID[]>;
@@ -43,11 +43,71 @@ function ensureBox(pose: Pose, id: ID): Box {
   return b;
 }
 
+type DerivedPlan = {
+  order: ID[];
+  table: Map<ID, Derived>;
+};
+
+function planDerived(scene: Scene): DerivedPlan {
+  const table = new Map<ID, Derived>();
+  for (const el of scene.elements.values()) {
+    if (el.derived) table.set(el.id, el.derived);
+  }
+  const order: ID[] = [];
+  const visited = new Set<ID>();
+  const onStack = new Set<ID>();
+  const stackPath: ID[] = [];
+  const visit = (id: ID): void => {
+    if (visited.has(id)) return;
+    if (onStack.has(id)) {
+      const cycleStart = stackPath.indexOf(id);
+      const cycle =
+        cycleStart >= 0 ? stackPath.slice(cycleStart).concat(id) : [id];
+      throw new Error(`derived cycle: ${cycle.join(" -> ")}`);
+    }
+    onStack.add(id);
+    stackPath.push(id);
+    const d = table.get(id);
+    if (d) {
+      for (const dep of d.deps) visit(dep);
+    }
+    stackPath.pop();
+    onStack.delete(id);
+    visited.add(id);
+    if (table.has(id)) order.push(id);
+  };
+  for (const id of table.keys()) visit(id);
+  return { order, table };
+}
+
+export function applyDerived(pose: Pose, scene: Scene): Pose {
+  const plan = planDerived(scene);
+  for (const id of plan.order) {
+    const spec = plan.table.get(id);
+    if (!spec) continue;
+    const ownBox = pose.boxes.get(id);
+    if (!ownBox) continue;
+    const depBoxes: Box[] = [];
+    for (const depId of spec.deps) {
+      const db = pose.boxes.get(depId);
+      if (!db) {
+        throw new Error(
+          `derived '${id}' depends on '${depId}' which is not in the pose`,
+        );
+      }
+      depBoxes.push(db);
+    }
+    Object.assign(ownBox, spec.compute(ownBox, depBoxes));
+  }
+  return pose;
+}
+
 export function resolve(
   base: Pose,
   refs: Refs,
   overrides: readonly Override[],
   hierarchy: Hierarchy,
+  scene?: Scene,
 ): Pose {
   const out: Pose = { boxes: new Map() };
   for (const [id, b] of base.boxes) out.boxes.set(id, cloneBox(b));
@@ -109,9 +169,6 @@ export function resolve(
       continue;
     }
     if ("exit_to" in ov) {
-      // The element is leaving. Its resolved pose IS the exit pose: fade to
-      // opacity 0 at the anchor's centre. Inherit w/h from prev so the tween
-      // fades a real-sized element, not a 0-sized point.
       const b = ensureBox(out, ov.id);
       const prev = refs.prev.boxes.get(ov.id);
       if (prev) {
@@ -133,6 +190,10 @@ export function resolve(
       continue;
     }
   }
+
+  // Post-pass: derived elements recompute from their now-current dep boxes.
+  // Topological order over derived.deps; a cycle throws at compile time.
+  if (scene) applyDerived(out, scene);
 
   return out;
 }
