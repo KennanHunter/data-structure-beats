@@ -11,7 +11,7 @@
   },
   "scripts": {
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@kennanhunter/data-structure-beats": "workspace:*",

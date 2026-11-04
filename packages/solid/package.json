@@ -16,7 +16,7 @@
   "scripts": {
     "build": "vite build && tsc",
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "peerDependencies": {
     "solid-js": "^1.9.0"
