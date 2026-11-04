@@ -8,6 +8,7 @@ import {
   NODE_W,
   HEAD_W,
   GAP,
+  ROW_H,
 } from "./adapter";
 import { fixtures, insertMid, prepend5, removeMiddle } from "./fixtures";
 
@@ -38,16 +39,15 @@ describe("linked-list fixtures", () => {
       expect(op.final.nodes[op.final.head as number].value).toBe(5);
     });
 
-    it("final frame has 5 node boxes at expected x positions", () => {
+    it("final frame has 5 node boxes at expected x positions on the list row", () => {
       const frame = sample(tl, tl.steps.length - 1, 1);
-      // Walk the head chain in the final snapshot and check layout matches.
       let idx = 0;
       let cur = op.final.head;
       while (cur !== null) {
         const box = frame.pose.boxes.get(nodeElId(cur));
         expect(box, `node-${cur} missing from final pose`).toBeDefined();
         expect(box!.x).toBe(HEAD_W + GAP + idx * (NODE_W + GAP));
-        expect(box!.y).toBe(0);
+        expect(box!.y).toBe(ROW_H);
         cur = op.final.nodes[cur].next;
         idx++;
       }

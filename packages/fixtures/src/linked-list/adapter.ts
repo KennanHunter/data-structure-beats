@@ -14,7 +14,16 @@ export const NODE_H = 40;
 export const GAP = 32;
 export const HEAD_W = 24;
 export const PTR_H = 4;
-const ABOVE_DY = -(NODE_H + 28);
+// Two-row layout:
+//   row 0 — staging area where incoming nodes appear before dropping down.
+//   row 1 — the list itself (and the head pointer).
+// ROW_H is the vertical stride between row centers; ROW_Y gives the y
+// coordinate of a given row's top edge.
+export const ROW_H = NODE_H + 28;
+const ROW_Y = (row: number): number => row * ROW_H;
+const LIST_ROW = 1;
+const STAGING_ROW = 0;
+const ABOVE_DY = ROW_Y(STAGING_ROW) - ROW_Y(LIST_ROW);
 const SLIDE_DX = NODE_W + GAP;
 
 export const nodeElId = (id: NodeId): string => `node-${id}`;
@@ -89,31 +98,32 @@ export const linkedListAdapter: Adapter<LLEvent, LinkedList> = {
 
   layout(scene) {
     const boxes = new Map();
+    const listY = ROW_Y(LIST_ROW);
+    const ptrY = listY + (NODE_H - PTR_H) / 2;
     let idx = 0;
     for (const el of scene.elements.values()) {
       if (el.kind !== "node") continue;
       const x = HEAD_W + GAP + idx * (NODE_W + GAP);
-      boxes.set(el.id, { x, y: 0, w: NODE_W, h: NODE_H, opacity: 1 });
+      boxes.set(el.id, { x, y: listY, w: NODE_W, h: NODE_H, opacity: 1 });
       idx++;
     }
-    // Head anchor: zero-width point at x=0 the head pointer spans from.
+    // Head anchor: zero-width point at x=0, aligned with the list row.
     if (scene.elements.has(HEAD_ANCHOR_ID)) {
       boxes.set(HEAD_ANCHOR_ID, {
         x: 0,
-        y: (NODE_H - PTR_H) / 2,
+        y: ptrY,
         w: 0,
         h: PTR_H,
         opacity: 0,
       });
     }
     // Pointers and head pointer: layout seeds y/h/tween_size; derived
-    // recomputes x/w. tween_size on so the width can lerp during rewires
-    // and insert-driven slides instead of snapping.
+    // recomputes x/w.
     for (const el of scene.elements.values()) {
       if (el.kind !== "pointer" && el.kind !== "head-pointer") continue;
       boxes.set(el.id, {
         x: 0,
-        y: (NODE_H - PTR_H) / 2,
+        y: ptrY,
         w: 0,
         h: PTR_H,
         opacity: 1,
