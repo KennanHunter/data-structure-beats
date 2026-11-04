@@ -39,6 +39,3 @@ export { lerp, lerpLog, lerpPose, lerpCamera } from "./lerp";
 
 export type { Adapter, BeatCtx, CompileOpts } from "./compile";
 export { compile, sample } from "./compile";
-
-export type { Clock, Cursor, Player } from "./player";
-export { createPlayer, defaultClock } from "./player";
