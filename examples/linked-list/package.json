@@ -1,0 +1,23 @@
+{
+  "name": "@beats/example-linked-list",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@kennanhunter/data-structure-beats": "workspace:*",
+    "@kennanhunter/data-structure-beats-kit": "workspace:*",
+    "@kennanhunter/data-structure-beats-solid": "workspace:*",
+    "@beats/fixtures": "workspace:*",
+    "solid-js": "^1.9.0"
+  },
+  "devDependencies": {
+    "typescript": "~7.0.2",
+    "vite": "^5.4.21",
+    "vite-plugin-solid": "^2.11.0"
+  }
+}

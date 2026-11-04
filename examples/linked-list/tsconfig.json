@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "noEmit": true,
+    "emitDeclarationOnly": false,
+    "declaration": false,
+    "lib": ["ES2023", "DOM"],
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js"
+  },
+  "include": ["src"]
+}
