@@ -74,7 +74,13 @@ export function compile<E extends BaseEvent, S>(
   const scenesOut: Scene[] = [];
   const durations: number[] = [];
 
-  let prevPose: Pose | undefined;
+  // Seed prev with the operation's initial state so step 0 sees the "before"
+  // pose for its first beat. Without this, step 0's lerp starts from its own
+  // post-emit layout — fine for read-only first events (visit) but wrong for
+  // mutating first events (prepend into an empty list would slide instead of
+  // pop in).
+  const initialScene = adapter.scene(op.initial);
+  let prevPose: Pose | undefined = adapter.layout(initialScene);
 
   for (let i = 0; i < op.steps.length; i++) {
     const step = op.steps[i];
@@ -87,7 +93,7 @@ export function compile<E extends BaseEvent, S>(
 
     // Starting pose for this step is the previous step's final pose (or
     // layout for the first step).
-    const startPose = prevPose ?? base;
+    const startPose: Pose = prevPose ?? base;
     const startCamera = fitCamera(startPose, viewport, padding);
     const startSize = poseSize(startPose, startCamera.zoom, padding);
 
@@ -101,7 +107,7 @@ export function compile<E extends BaseEvent, S>(
       },
     ];
 
-    let runningPose = startPose;
+    let runningPose: Pose = startPose;
     let totalWeight = 0;
     for (const beat of beats) {
       const overridesPose = resolve(base, refs, beat.overrides, hierarchy);

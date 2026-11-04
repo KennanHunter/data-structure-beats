@@ -13,6 +13,8 @@ export const NODE_H = 40;
 export const GAP = 32;
 export const HEAD_W = 24;
 export const PTR_H = 4;
+const ABOVE_DY = -(NODE_H + 28);
+const SLIDE_DX = NODE_W + GAP;
 
 export const nodeElId = (id: NodeId): string => `node-${id}`;
 export const ptrElId = (fromId: NodeId): string => `ptr-${fromId}`;
@@ -111,19 +113,58 @@ export const linkedListAdapter: Adapter<LLEvent, LinkedList> = {
         ];
       }
       case "insert_node": {
-        const enterAnchor =
-          event.after === null ? HEAD_PTR_ID : nodeElId(event.after);
-        const overrides: Override[] = [
-          { id: nodeElId(event.node_id), enter_from: enterAnchor },
+        // Two-beat choreography:
+        //   beat 1 — siblings right of the slot slide left back to their
+        //            pre-insertion positions; new node appears above the slot.
+        //   beat 2 — everything settles to the base layout (siblings slide
+        //            right into final position; new node drops in).
+        // Pointers that depend on the new node (rewired predecessor + new
+        // node's outgoing) stay hidden through both beats; they re-appear
+        // during the following rewire_next event.
+        const snap = ctx.step.snapshot;
+        const order: NodeId[] = [];
+        let cur = snap.head;
+        while (cur !== null) {
+          order.push(cur);
+          cur = snap.nodes[cur].next;
+        }
+        const insertIdx = order.indexOf(event.node_id);
+        if (insertIdx < 0) return [{ overrides: [], weight: 1 }];
+
+        const hidePointers: Override[] = [
+          { id: ptrElId(event.node_id), hide: true },
+          event.after === null
+            ? { id: HEAD_PTR_ID, hide: true }
+            : { id: ptrElId(event.after), hide: true },
         ];
-        return [{ overrides, weight: 1 }];
+
+        const beat1: Override[] = [
+          { id: nodeElId(event.node_id), offset: { dx: 0, dy: ABOVE_DY } },
+          ...hidePointers,
+        ];
+        for (let i = insertIdx + 1; i < order.length; i++) {
+          beat1.push({
+            id: nodeElId(order[i]),
+            offset: { dx: -SLIDE_DX, dy: 0 },
+          });
+        }
+
+        return [
+          { overrides: beat1, weight: 1 },
+          { overrides: hidePointers, weight: 1 },
+        ];
       }
       case "rewire_next": {
         const ptrId =
           event.from_id === "head" ? HEAD_PTR_ID : ptrElId(event.from_id);
+        // Explicit opacity: 1 so a pointer that was hidden during the
+        // preceding insert_node fades back in while its geometry lerps.
         return [
           {
-            overrides: [{ id: ptrId, tween_size: true }],
+            overrides: [
+              { id: ptrId, tween_size: true },
+              { id: ptrId, set: { opacity: 1 } },
+            ],
             weight: 1,
           },
         ];

@@ -25,6 +25,7 @@ export type Operation<E extends BaseEvent, S> = {
   request: unknown;
   steps: Step<E, S>[];
   scopes: ScopeRecord[];
+  initial: S;
   final: S;
 };
 
@@ -62,7 +63,8 @@ export function operation<E extends BaseEvent, S>(
   const scopes: MutableScope[] = [];
   const stack: MutableScope[] = [];
   let scopeIdSeq = 0;
-  let cachedSnapshot: S | undefined = input.snapshot();
+  const initialSnapshot: S = input.snapshot();
+  let cachedSnapshot: S | undefined = initialSnapshot;
   let dirty = false;
 
   const getSnapshot = (): S => {
@@ -158,6 +160,7 @@ export function operation<E extends BaseEvent, S>(
     request: input.request,
     steps,
     scopes: scopeRecords,
+    initial: initialSnapshot,
     final: getSnapshot(),
   };
 }
