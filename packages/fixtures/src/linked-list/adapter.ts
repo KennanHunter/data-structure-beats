@@ -1,5 +1,6 @@
 import type {
   Adapter,
+  Box,
   Override,
   Pose,
   Scene,
@@ -19,6 +20,29 @@ const SLIDE_DX = NODE_W + GAP;
 export const nodeElId = (id: NodeId): string => `node-${id}`;
 export const ptrElId = (fromId: NodeId): string => `ptr-${fromId}`;
 export const HEAD_PTR_ID = "head-ptr";
+const HEAD_ANCHOR_ID = "head-anchor";
+
+// Pointer geometry comes from its endpoints. Both regular pointers and the
+// head pointer use the same compute: x spans from the left anchor's right
+// edge to the right anchor's left edge. If the endpoints overlap or cross
+// (mid-animation during a slide-apart) the pointer fades out so it doesn't
+// render as a backwards arrow.
+const spanBetween = (own: Box, deps: Box[]): Partial<Box> => {
+  const [from, to] = deps;
+  const fromRight = from.x + from.w;
+  const span = to.x - fromRight;
+  // Also: a pointer inherits the lower opacity of its endpoints, so a
+  // pop-in node drags its outgoing arrow in at the same rate.
+  const endpointOpacity = Math.min(from.opacity, to.opacity);
+  const geometryOpacity = span > 0 ? 1 : 0;
+  return {
+    x: fromRight,
+    w: Math.max(0, span),
+    y: own.y,
+    h: own.h,
+    opacity: own.opacity * endpointOpacity * geometryOpacity,
+  };
+};
 
 export const linkedListAdapter: Adapter<LLEvent, LinkedList> = {
   scene(snap) {
@@ -36,14 +60,28 @@ export const linkedListAdapter: Adapter<LLEvent, LinkedList> = {
           id: ptrElId(id),
           kind: "pointer",
           data: { fromId: id, toId: next },
+          derived: {
+            deps: [nodeElId(id), nodeElId(next)],
+            compute: spanBetween,
+          },
         });
       }
     }
     if (snap.head !== null) {
+      // A zero-width anchor at x=0 gives the head pointer a "from" element
+      // so it uses the same derived span as regular pointers.
+      elements.set(HEAD_ANCHOR_ID, {
+        id: HEAD_ANCHOR_ID,
+        kind: "head-anchor",
+      });
       elements.set(HEAD_PTR_ID, {
         id: HEAD_PTR_ID,
         kind: "head-pointer",
         data: { toId: snap.head },
+        derived: {
+          deps: [HEAD_ANCHOR_ID, nodeElId(snap.head)],
+          compute: spanBetween,
+        },
       });
     }
     return { elements } as Scene;
@@ -51,45 +89,35 @@ export const linkedListAdapter: Adapter<LLEvent, LinkedList> = {
 
   layout(scene) {
     const boxes = new Map();
-    // Determine index for each live node by walking scene order of node kinds.
-    // Scene doesn't preserve traversal order per se — but we inserted in head→tail
-    // order above, and Map iteration preserves insertion order.
     let idx = 0;
-    const nodeIndex = new Map<NodeId, number>();
     for (const el of scene.elements.values()) {
       if (el.kind !== "node") continue;
-      const nodeId = (el.data as { nodeId: NodeId }).nodeId;
-      nodeIndex.set(nodeId, idx);
       const x = HEAD_W + GAP + idx * (NODE_W + GAP);
       boxes.set(el.id, { x, y: 0, w: NODE_W, h: NODE_H, opacity: 1 });
       idx++;
     }
-    // Head pointer: sits in the left margin pointing at the head node.
+    // Head anchor: zero-width point at x=0 the head pointer spans from.
+    if (scene.elements.has(HEAD_ANCHOR_ID)) {
+      boxes.set(HEAD_ANCHOR_ID, {
+        x: 0,
+        y: (NODE_H - PTR_H) / 2,
+        w: 0,
+        h: PTR_H,
+        opacity: 0,
+      });
+    }
+    // Pointers and head pointer: layout seeds y/h/tween_size; derived
+    // recomputes x/w. tween_size on so the width can lerp during rewires
+    // and insert-driven slides instead of snapping.
     for (const el of scene.elements.values()) {
-      if (el.kind !== "head-pointer") continue;
+      if (el.kind !== "pointer" && el.kind !== "head-pointer") continue;
       boxes.set(el.id, {
         x: 0,
         y: (NODE_H - PTR_H) / 2,
-        w: HEAD_W + GAP,
+        w: 0,
         h: PTR_H,
         opacity: 1,
-      });
-    }
-    // Pointers: span from right edge of fromNode to left edge of toNode.
-    for (const el of scene.elements.values()) {
-      if (el.kind !== "pointer") continue;
-      const { fromId, toId } = el.data as { fromId: NodeId; toId: NodeId };
-      const fi = nodeIndex.get(fromId);
-      const ti = nodeIndex.get(toId);
-      if (fi === undefined || ti === undefined) continue;
-      const fromX = HEAD_W + GAP + fi * (NODE_W + GAP) + NODE_W;
-      const toX = HEAD_W + GAP + ti * (NODE_W + GAP);
-      boxes.set(el.id, {
-        x: fromX,
-        y: (NODE_H - PTR_H) / 2,
-        w: toX - fromX,
-        h: PTR_H,
-        opacity: 1,
+        tween_size: true,
       });
     }
     return { boxes } as Pose;
@@ -99,8 +127,6 @@ export const linkedListAdapter: Adapter<LLEvent, LinkedList> = {
     const event = ctx.step.event;
     switch (event.t) {
       case "visit": {
-        // Minimal "highlight" placeholder — pulses the visited node by
-        // nudging its opacity. Proper halo lands with the kit package later.
         const overrides: Override[] = [
           { id: nodeElId(event.node_id), set: { opacity: 0.6 } },
         ];
@@ -113,14 +139,11 @@ export const linkedListAdapter: Adapter<LLEvent, LinkedList> = {
         ];
       }
       case "insert_node": {
-        // Two-beat choreography:
-        //   beat 1 — siblings right of the slot slide left back to their
-        //            pre-insertion positions; new node appears above the slot.
-        //   beat 2 — everything settles to the base layout (siblings slide
-        //            right into final position; new node drops in).
-        // Pointers that depend on the new node (rewired predecessor + new
-        // node's outgoing) stay hidden through both beats; they re-appear
-        // during the following rewire_next event.
+        // Siblings right of the slot slide left back to their pre-insertion
+        // positions (beat 1). New node appears above its final slot. Then
+        // everything settles to base (beat 2) — siblings slide right, new
+        // node drops in. Pointers auto-track their endpoints via derived
+        // compute: no hide/show gymnastics needed.
         const snap = ctx.step.snapshot;
         const order: NodeId[] = [];
         let cur = snap.head;
@@ -131,16 +154,8 @@ export const linkedListAdapter: Adapter<LLEvent, LinkedList> = {
         const insertIdx = order.indexOf(event.node_id);
         if (insertIdx < 0) return [{ overrides: [], weight: 1 }];
 
-        const hidePointers: Override[] = [
-          { id: ptrElId(event.node_id), hide: true },
-          event.after === null
-            ? { id: HEAD_PTR_ID, hide: true }
-            : { id: ptrElId(event.after), hide: true },
-        ];
-
         const beat1: Override[] = [
           { id: nodeElId(event.node_id), offset: { dx: 0, dy: ABOVE_DY } },
-          ...hidePointers,
         ];
         for (let i = insertIdx + 1; i < order.length; i++) {
           beat1.push({
@@ -151,27 +166,18 @@ export const linkedListAdapter: Adapter<LLEvent, LinkedList> = {
 
         return [
           { overrides: beat1, weight: 1 },
-          { overrides: hidePointers, weight: 1 },
+          { overrides: [], weight: 1 },
         ];
       }
       case "rewire_next": {
-        const ptrId =
-          event.from_id === "head" ? HEAD_PTR_ID : ptrElId(event.from_id);
-        // Explicit opacity: 1 so a pointer that was hidden during the
-        // preceding insert_node fades back in while its geometry lerps.
-        return [
-          {
-            overrides: [
-              { id: ptrId, tween_size: true },
-              { id: ptrId, set: { opacity: 1 } },
-            ],
-            weight: 1,
-          },
-        ];
+        // Pointers already auto-track their endpoints; this event is a step
+        // of its own only to give the viewer a beat to register that the
+        // link changed. No override needed.
+        return [{ overrides: [], weight: 1 }];
       }
       case "remove_node": {
         const exitAnchor =
-          event.prev === "head" ? HEAD_PTR_ID : nodeElId(event.prev);
+          event.prev === "head" ? HEAD_ANCHOR_ID : nodeElId(event.prev);
         return [
           {
             overrides: [{ id: nodeElId(event.node_id), exit_to: exitAnchor }],

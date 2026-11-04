@@ -90,9 +90,11 @@ describe("linked-list fixtures", () => {
 
     it("removed node has opacity 0 in final frame (via exit_to)", () => {
       const frame = sample(tl, tl.steps.length - 1, 1);
-      // Walk all boxes; exactly one should have opacity 0 (the removed node).
-      const faded = [...frame.pose.boxes.values()].filter(
-        (b) => b.opacity === 0,
+      // Among node elements only, exactly one should have opacity 0.
+      // head-anchor is also opacity 0 by design (it's a non-visible
+      // anchor for the head pointer's derived geometry).
+      const faded = [...frame.pose.boxes.entries()].filter(
+        ([id, b]) => id.startsWith("node-") && b.opacity === 0,
       );
       expect(faded.length).toBe(1);
     });
