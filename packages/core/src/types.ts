@@ -11,11 +11,17 @@ export type Box = {
   exit_to?: ID;
 };
 
+export type Derived = {
+  deps: ID[];
+  compute: (ownBox: Box, depBoxes: Box[]) => Partial<Box>;
+};
+
 export type Element = {
   id: ID;
   kind: string;
   parent?: ID;
   data?: unknown;
+  derived?: Derived;
 };
 
 export type Scene = {
@@ -55,8 +61,6 @@ export type Camera = {
   cy: number;
   zoom: number;
 };
-
-export type CameraMode = "fit" | "follow" | "overview";
 
 export type Size = {
   width: number;

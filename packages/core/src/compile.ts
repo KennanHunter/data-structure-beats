@@ -1,8 +1,8 @@
 import type { BaseEvent, Operation, Step } from "./operation";
 import type {
   Beat,
+  Bounds,
   Camera,
-  CameraMode,
   Frame,
   Keyframe,
   Pose,
@@ -12,7 +12,12 @@ import type {
   Timeline,
 } from "./types";
 import { linear } from "./types";
-import { derivedBounds, hierarchyFromScene, resolve } from "./resolve";
+import {
+  applyDerived,
+  derivedBounds,
+  hierarchyFromScene,
+  resolve,
+} from "./resolve";
 import { lerpCamera, lerpPose } from "./lerp";
 
 export type BeatCtx<E extends BaseEvent, S> = {
@@ -28,10 +33,12 @@ export interface Adapter<E extends BaseEvent, S> {
   beats(ctx: BeatCtx<E, S>): Beat[];
 }
 
+export type CameraMode = "fit" | "fit-per-step";
+
 export type CompileOpts = {
   step_ms?: number;
   viewport?: Size;
-  camera?: CameraMode;
+  camera_mode?: CameraMode;
   padding?: number;
 };
 
@@ -39,8 +46,7 @@ const DEFAULT_STEP_MS = 300;
 const DEFAULT_VIEWPORT: Size = { width: 1280, height: 720 };
 const DEFAULT_PADDING = 48;
 
-function fitCamera(pose: Pose, viewport: Size, padding: number): Camera {
-  const b = derivedBounds(pose);
+function cameraFromBounds(b: Bounds, viewport: Size, padding: number): Camera {
   const w = Math.max(1, b.max_x - b.min_x);
   const h = Math.max(1, b.max_y - b.min_y);
   const availW = Math.max(1, viewport.width - 2 * padding);
@@ -53,13 +59,27 @@ function fitCamera(pose: Pose, viewport: Size, padding: number): Camera {
   };
 }
 
-function poseSize(pose: Pose, zoom: number, padding: number): Size {
-  const b = derivedBounds(pose);
+function sizeFromBounds(b: Bounds, zoom: number, padding: number): Size {
   return {
     width: (b.max_x - b.min_x) * zoom + 2 * padding,
     height: (b.max_y - b.min_y) * zoom + 2 * padding,
   };
 }
+
+function unionBounds(a: Bounds, b: Bounds): Bounds {
+  return {
+    min_x: Math.min(a.min_x, b.min_x),
+    min_y: Math.min(a.min_y, b.min_y),
+    max_x: Math.max(a.max_x, b.max_x),
+    max_y: Math.max(a.max_y, b.max_y),
+  };
+}
+
+type RawStep = {
+  scene: Scene;
+  frames: { pose: Pose; weight: number; ease: Beat["ease"] | undefined }[];
+  totalWeight: number;
+};
 
 export function compile<E extends BaseEvent, S>(
   adapter: Adapter<E, S>,
@@ -69,85 +89,98 @@ export function compile<E extends BaseEvent, S>(
   const step_ms = opts.step_ms ?? DEFAULT_STEP_MS;
   const viewport = opts.viewport ?? DEFAULT_VIEWPORT;
   const padding = opts.padding ?? DEFAULT_PADDING;
+  const cameraMode: CameraMode = opts.camera_mode ?? "fit";
 
-  const stepsOut: Keyframe[][] = [];
-  const scenesOut: Scene[] = [];
-  const durations: number[] = [];
-
-  // Seed prev with the operation's initial state so step 0 sees the "before"
-  // pose for its first beat. Without this, step 0's lerp starts from its own
-  // post-emit layout — fine for read-only first events (visit) but wrong for
-  // mutating first events (prepend into an empty list would slide instead of
-  // pop in).
+  // Pass 1: resolve poses for every step + beat, no camera yet. Track the
+  // union of derivedBounds across every keyframe — that's the op-max
+  // envelope the default `fit` camera uses.
   const initialScene = adapter.scene(op.initial);
-  let prevPose: Pose | undefined = adapter.layout(initialScene);
+  let prevPose: Pose = applyDerived(adapter.layout(initialScene), initialScene);
+
+  const raw: RawStep[] = [];
+  let envelope: Bounds | undefined;
+
+  const accBounds = (p: Pose) => {
+    const b = derivedBounds(p);
+    envelope = envelope ? unionBounds(envelope, b) : b;
+  };
+  accBounds(prevPose);
 
   for (let i = 0; i < op.steps.length; i++) {
     const step = op.steps[i];
     const scene = adapter.scene(step.snapshot);
     const base = adapter.layout(scene);
     const hierarchy = hierarchyFromScene(scene);
-    const refs: Refs = { base, prev: prevPose ?? base };
+    const refs: Refs = { base, prev: prevPose };
 
     const beats = adapter.beats({ op, index: i, step, refs });
 
-    // Starting pose for this step is the previous step's final pose (or
-    // layout for the first step).
-    const startPose: Pose = prevPose ?? base;
-    const startCamera = fitCamera(startPose, viewport, padding);
-    const startSize = poseSize(startPose, startCamera.zoom, padding);
-
-    const stepFrames: Keyframe[] = [
-      {
-        pose: startPose,
-        camera: startCamera,
-        size: startSize,
-        weight: 0,
-        ease: linear,
-      },
+    const startPose = prevPose;
+    const frames: RawStep["frames"] = [
+      { pose: startPose, weight: 0, ease: linear },
     ];
+    accBounds(startPose);
 
-    let runningPose: Pose = startPose;
     let totalWeight = 0;
+    let runningPose: Pose = startPose;
     for (const beat of beats) {
-      const overridesPose = resolve(base, refs, beat.overrides, hierarchy);
-      // Fold: the beat produces a new pose by taking the base layout and
-      // applying overrides. Carry across beats by using the previous beat's
-      // pose as the starting point for the next resolve's "base".
-      // For Phase 1 we take the simple approach: each beat's resolve is
-      // against (base, refs), and the resulting pose is what we lerp to.
-      void runningPose;
-      const camera = fitCamera(overridesPose, viewport, padding);
-      const size = poseSize(overridesPose, camera.zoom, padding);
-      stepFrames.push({
-        pose: overridesPose,
-        camera,
-        size,
-        weight: beat.weight,
-        ease: beat.ease ?? linear,
-      });
-      runningPose = overridesPose;
+      const pose = resolve(base, refs, beat.overrides, hierarchy, scene);
+      frames.push({ pose, weight: beat.weight, ease: beat.ease });
+      accBounds(pose);
+      runningPose = pose;
       totalWeight += beat.weight;
     }
 
     if (beats.length === 0) {
-      // No beats: this step is a no-op pose = base. Give it weight 1 so the
-      // timeline doesn't have zero-duration steps.
-      stepFrames.push({
-        pose: base,
-        camera: fitCamera(base, viewport, padding),
-        size: poseSize(base, fitCamera(base, viewport, padding).zoom, padding),
-        weight: 1,
-        ease: linear,
-      });
-      totalWeight = 1;
+      frames.push({ pose: base, weight: 1, ease: linear });
+      accBounds(base);
       runningPose = base;
+      totalWeight = 1;
     }
 
-    stepsOut.push(stepFrames);
-    scenesOut.push(scene);
-    durations.push(step_ms * totalWeight);
+    raw.push({ scene, frames, totalWeight });
     prevPose = runningPose;
+  }
+
+  // Pass 2: emit Keyframes. Camera is op-max for "fit", per-pose for
+  // "fit-per-step". Size tracks whichever camera was chosen so the SVG
+  // viewport grows or stays fixed accordingly.
+  const envBounds = envelope ?? {
+    min_x: 0,
+    min_y: 0,
+    max_x: 0,
+    max_y: 0,
+  };
+  const envCamera = cameraFromBounds(envBounds, viewport, padding);
+  const envSize = sizeFromBounds(envBounds, envCamera.zoom, padding);
+
+  const stepsOut: Keyframe[][] = [];
+  const durations: number[] = [];
+  const scenesOut: Scene[] = raw.map((r) => r.scene);
+
+  for (const r of raw) {
+    const emitted: Keyframe[] = r.frames.map((f) => {
+      if (cameraMode === "fit") {
+        return {
+          pose: f.pose,
+          camera: envCamera,
+          size: envSize,
+          weight: f.weight,
+          ease: f.ease ?? linear,
+        };
+      }
+      const b = derivedBounds(f.pose);
+      const cam = cameraFromBounds(b, viewport, padding);
+      return {
+        pose: f.pose,
+        camera: cam,
+        size: sizeFromBounds(b, cam.zoom, padding),
+        weight: f.weight,
+        ease: f.ease ?? linear,
+      };
+    });
+    stepsOut.push(emitted);
+    durations.push(step_ms * r.totalWeight);
   }
 
   return { steps: stepsOut, scenes: scenesOut, durations, step_ms };
@@ -156,7 +189,6 @@ export function compile<E extends BaseEvent, S>(
 export function sample(tl: Timeline, step: number, t: number): Frame {
   const clampedStep = Math.max(0, Math.min(tl.steps.length - 1, step));
   const frames = tl.steps[clampedStep];
-  // frames[0] is the start keyframe (weight 0); frames[1..] are beats.
   if (frames.length === 1) {
     const kf = frames[0];
     return { pose: kf.pose, camera: kf.camera, size: kf.size };

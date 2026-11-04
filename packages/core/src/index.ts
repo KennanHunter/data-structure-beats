@@ -4,6 +4,7 @@ export const VERSION: string = pkg.version;
 export type {
   ID,
   Box,
+  Derived,
   Element,
   Scene,
   Pose,
@@ -12,7 +13,6 @@ export type {
   Ease,
   Beat,
   Camera,
-  CameraMode,
   Size,
   Bounds,
   Keyframe,
@@ -33,9 +33,14 @@ export type {
 export { operation } from "./operation";
 
 export type { Hierarchy } from "./resolve";
-export { resolve, hierarchyFromScene, derivedBounds } from "./resolve";
+export {
+  applyDerived,
+  derivedBounds,
+  hierarchyFromScene,
+  resolve,
+} from "./resolve";
 
 export { lerp, lerpLog, lerpPose, lerpCamera } from "./lerp";
 
-export type { Adapter, BeatCtx, CompileOpts } from "./compile";
+export type { Adapter, BeatCtx, CameraMode, CompileOpts } from "./compile";
 export { compile, sample } from "./compile";
