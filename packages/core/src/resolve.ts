@@ -109,7 +109,21 @@ export function resolve(
       continue;
     }
     if ("exit_to" in ov) {
+      // The element is leaving. Its resolved pose IS the exit pose: fade to
+      // opacity 0 at the anchor's centre. Inherit w/h from prev so the tween
+      // fades a real-sized element, not a 0-sized point.
       const b = ensureBox(out, ov.id);
+      const prev = refs.prev.boxes.get(ov.id);
+      if (prev) {
+        b.w = prev.w;
+        b.h = prev.h;
+      }
+      const anchor = out.boxes.get(ov.exit_to) ?? refs.base.boxes.get(ov.exit_to);
+      if (anchor) {
+        b.x = anchor.x + anchor.w / 2 - b.w / 2;
+        b.y = anchor.y + anchor.h / 2 - b.h / 2;
+      }
+      b.opacity = 0;
       b.exit_to = ov.exit_to;
       continue;
     }
